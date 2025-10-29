@@ -1,0 +1,795 @@
+{
+  "name": "blog-server",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "express-async-errors": "^3.1.1",
+    "jsonwebtoken": "^9.0.0",
+    "mongoose": "^7.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
+  }
+}
+PORT=5000
+MONGO_URI=mongodb://localhost:27017/blogdb
+JWT_SECRET=replace_with_a_long_random_secret
+JWT_EXPIRES_IN=7d
+import mongoose from 'mongoose';
+
+export const connectDB = async (uri) => {
+  try {
+    await mongoose.connect(uri, { });
+    console.log('MongoDB connected');
+  } catch (err) {
+    console.error('MongoDB connection error', err);
+    process.exit(1);
+  }
+};
+import mongoose from 'mongoose';
+import bcrypt from 'bcryptjs';
+
+const userSchema = new mongoose.Schema({
+  name: { type: String, required: true, trim: true, maxlength: 100 },
+  email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+  password: { type: String, required: true },
+  bio: { type: String, default: '' },
+  avatarUrl: { type: String, default: '' },
+}, { timestamps: true });
+
+// Hash password before save
+userSchema.pre('save', async function(next) {
+  if (!this.isModified('password')) return next();
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
+  next();
+});
+
+userSchema.methods.matchPassword = function(candidate) {
+  return bcrypt.compare(candidate, this.password);
+};
+
+userSchema.methods.toJSON = function() {
+  const obj = this.toObject();
+  delete obj.password;
+  return obj;
+};
+
+export default mongoose.model('User', userSchema);
+import mongoose from 'mongoose';
+
+const postSchema = new mongoose.Schema({
+  author: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  title: { type: String, required: true, trim: true, maxlength: 200 },
+  content: { type: String, required: true },
+  tags: [String],
+  published: { type: Boolean, default: true }
+}, { timestamps: true });
+
+export default mongoose.model('Post', postSchema);
+import mongoose from 'mongoose';
+
+const postSchema = new mongoose.Schema({
+  author: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  title: { type: String, required: true, trim: true, maxlength: 200 },
+  content: { type: String, required: true },
+  tags: [String],
+  published: { type: Boolean, default: true }
+}, { timestamps: true });
+
+export default mongoose.model('Post', postSchema);
+import mongoose from 'mongoose';
+
+const commentSchema = new mongoose.Schema({
+  post: { type: mongoose.Schema.Types.ObjectId, ref: 'Post', required: true },
+  author: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  content: { type: String, required: true, maxlength: 1000 },
+}, { timestamps: true });
+
+export default mongoose.model('Comment', commentSchema);
+import jwt from 'jsonwebtoken';
+import User from '../models/User.js';
+import dotenv from 'dotenv';
+dotenv.config();
+
+export const protect = async (req, res, next) => {
+  let token;
+  const auth = req.headers.authorization;
+  if (auth && auth.startsWith('Bearer ')) {
+    token = auth.split(' ')[1];
+  }
+  if (!token) return res.status(401).json({ message: 'Not authorized, token missing' });
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = await User.findById(decoded.id).select('-password');
+    if (!req.user) return res.status(401).json({ message: 'User no longer exists' });
+    next();
+  } catch (err) {
+    return res.status(401).json({ message: 'Not authorized, token invalid or expired' });
+  }
+};
+export const errorHandler = (err, req, res, next) => {
+  console.error(err);
+  const status = res.statusCode && res.statusCode !== 200 ? res.statusCode : 500;
+  res.status(status).json({
+    message: err.message || 'Server Error',
+    stack: process.env.NODE_ENV === 'production' ? undefined : err.stack
+  });
+};
+import jwt from 'jsonwebtoken';
+import dotenv from 'dotenv';
+import User from '../models/User.js';
+dotenv.config();
+
+const createToken = (userId) => {
+  return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
+    expiresIn: process.env.JWT_EXPIRES_IN || '7d'
+  });
+};
+
+export const register = async (req, res) => {
+  const { name, email, password } = req.body;
+  if (!name || !email || !password) return res.status(400).json({ message: 'All fields required' });
+
+  const exists = await User.findOne({ email });
+  if (exists) return res.status(400).json({ message: 'Email already registered' });
+
+  const user = await User.create({ name, email, password });
+  const token = createToken(user._id);
+
+  res.status(201).json({ user: user.toJSON(), token });
+};
+
+export const login = async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) return res.status(400).json({ message: 'All fields required' });
+
+  const user = await User.findOne({ email });
+  if (!user) return res.status(400).json({ message: 'Invalid credentials' });
+
+  const match = await user.matchPassword(password);
+  if (!match) return res.status(400).json({ message: 'Invalid credentials' });
+
+  const token = createToken(user._id);
+  res.json({ user: user.toJSON(), token });
+};
+import User from '../models/User.js';
+
+export const getProfile = async (req, res) => {
+  // protected route; req.user populated by middleware
+  res.json({ user: req.user.toJSON() });
+};
+
+export const updateProfile = async (req, res) => {
+  const user = await User.findById(req.user._id);
+  if (!user) return res.status(404).json({ message: 'User not found' });
+
+  const { name, bio, avatarUrl, password } = req.body;
+  if (name) user.name = name;
+  if (bio !== undefined) user.bio = bio;
+  if (avatarUrl !== undefined) user.avatarUrl = avatarUrl;
+  if (password) user.password = password; // will be hashed by pre-save hook
+
+  await user.save();
+  res.json({ user: user.toJSON() });
+};
+import Post from '../models/Post.js';
+import Comment from '../models/Comment.js';
+
+// Create post
+export const createPost = async (req, res) => {
+  const { title, content, tags } = req.body;
+  if (!title || !content) return res.status(400).json({ message: 'Title and content required' });
+
+  const post = await Post.create({
+    author: req.user._id,
+    title,
+    content,
+    tags: Array.isArray(tags) ? tags : (tags ? tags.split(',').map(t => t.trim()) : [])
+  });
+
+  res.status(201).json(post);
+};
+
+// Get list of posts (with pagination & optional author/tag filters)
+export const listPosts = async (req, res) => {
+  const page = Math.max(1, parseInt(req.query.page || '1'));
+  const limit = Math.max(1, parseInt(req.query.limit || '10'));
+  const skip = (page - 1) * limit;
+  const filter = { published: true };
+
+  if (req.query.author) filter.author = req.query.author;
+  if (req.query.tag) filter.tags = req.query.tag;
+
+  const total = await Post.countDocuments(filter);
+  const posts = await Post.find(filter)
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limit)
+    .populate('author', 'name avatarUrl');
+
+  res.json({ page, limit, total, posts });
+};
+
+// Get single post by id (with comments)
+export const getPost = async (req, res) => {
+  const post = await Post.findById(req.params.id).populate('author', 'name avatarUrl');
+  if (!post) return res.status(404).json({ message: 'Post not found' });
+
+  const comments = await Comment.find({ post: post._id }).sort({ createdAt: 1 }).populate('author', 'name avatarUrl');
+  res.json({ post, comments });
+};
+
+// Update post (only author)
+export const updatePost = async (req, res) => {
+  const post = await Post.findById(req.params.id);
+  if (!post) return res.status(404).json({ message: 'Post not found' });
+  if (!post.author.equals(req.user._id)) return res.status(403).json({ message: 'Not authorized' });
+
+  const { title, content, tags, published } = req.body;
+  if (title !== undefined) post.title = title;
+  if (content !== undefined) post.content = content;
+  if (tags !== undefined) post.tags = Array.isArray(tags) ? tags : tags.split(',').map(t => t.trim());
+  if (published !== undefined) post.published = published;
+
+  await post.save();
+  res.json(post);
+};
+
+// Delete post (only author)
+export const deletePost = async (req, res) => {
+  const post = await Post.findById(req.params.id);
+  if (!post) return res.status(404).json({ message: 'Post not found' });
+  if (!post.author.equals(req.user._id)) return res.status(403).json({ message: 'Not authorized' });
+
+  await post.remove();
+  // optionally remove comments
+  await Comment.deleteMany({ post: post._id });
+  res.json({ message: 'Post removed' });
+};
+import express from 'express';
+import { register, login } from '../controllers/authController.js';
+const router = express.Router();
+
+router.post('/register', register);
+router.post('/login', login);
+
+export default router;
+import express from 'express';
+import { getProfile, updateProfile } from '../controllers/userController.js';
+import { protect } from '../middleware/auth.js';
+const router = express.Router();
+
+router.get('/me', protect, getProfile);
+router.put('/me', protect, updateProfile);
+
+export default router;
+import express from 'express';
+import { getProfile, updateProfile } from '../controllers/userController.js';
+import { protect } from '../middleware/auth.js';
+const router = express.Router();
+
+router.get('/me', protect, getProfile);
+router.put('/me', protect, updateProfile);
+
+export default router;
+import express from 'express';
+import {
+  createPost, listPosts, getPost, updatePost, deletePost
+} from '../controllers/postController.js';
+import { protect } from '../middleware/auth.js';
+const router = express.Router();
+
+router.get('/', listPosts);
+router.post('/', protect, createPost);
+router.get('/:id', getPost);
+router.put('/:id', protect, updatePost);
+router.delete('/:id', protect, deletePost);
+
+export default router;
+import express from 'express';
+import { addComment, updateComment, deleteComment } from '../controllers/commentController.js';
+import { protect } from '../middleware/auth.js';
+const router = express.Router({ mergeParams: true });
+
+// add comment to a post: POST /api/posts/:postId/comments
+router.post('/:postId/comments', protect, addComment);
+
+// update comment: PUT /api/comments/:commentId
+router.put('/comments/:commentId', protect, updateComment);
+
+// delete comment: DELETE /api/comments/:commentId
+router.delete('/comments/:commentId', protect, deleteComment);
+
+export default router;
+import express from 'express';
+import dotenv from 'dotenv';
+import cors from 'cors';
+import 'express-async-errors';
+import { connectDB } from './config/db.js';
+import authRoutes from './routes/auth.js';
+import userRoutes from './routes/users.js';
+import postRoutes from './routes/posts.js';
+import commentRoutes from './routes/comments.js';
+import { errorHandler } from './middleware/errorHandler.js';
+
+dotenv.config();
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// Connect DB
+await connectDB(process.env.MONGO_URI);
+
+// Routes
+app.use('/api/auth', authRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/posts', postRoutes);
+app.use('/api', commentRoutes); // routes included for /:postId/comments & /comments/:id
+
+// Health
+app.get('/health', (req, res) => res.send({ status: 'ok' }));
+
+// Error handler (last)
+app.use(errorHandler);
+
+// Start server
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+{
+  "name": "blog-client",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.14.0"
+  },
+  "scripts": {
+    "start": "webpack serve --mode development --open",
+    "build": "webpack --mode production"
+  },
+  "devDependencies": {
+    "babel-loader": "^9.1.3",
+    "@babel/core": "^7.22.9",
+    "@babel/preset-env": "^7.22.9",
+    "@babel/preset-react": "^7.22.5",
+    "css-loader": "^6.8.1",
+    "style-loader": "^3.3.3",
+    "webpack": "^5.88.2",
+    "webpack-cli": "^5.1.4",
+    "webpack-dev-server": "^4.15.1"
+  }
+}
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Blog App</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="/main.js"></script>
+  </body>
+</html>
+// simple helper for fetch calls
+const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+
+const json = async (res) => {
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    const err = new Error(data?.message || res.statusText);
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
+  return data;
+};
+
+export const authRegister = (payload) =>
+  fetch(`${API_BASE}/auth/register`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) }).then(json);
+
+export const authLogin = (payload) =>
+  fetch(`${API_BASE}/auth/login`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) }).then(json);
+
+export const getProfile = (token) =>
+  fetch(`${API_BASE}/users/me`, { headers: { Authorization: `Bearer ${token}` } }).then(json);
+
+export const updateProfile = (token, payload) =>
+  fetch(`${API_BASE}/users/me`, { method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type':'application/json' }, body: JSON.stringify(payload) }).then(json);
+
+export const listPosts = (page=1, limit=10) =>
+  fetch(`${API_BASE}/posts?page=${page}&limit=${limit}`).then(json);
+
+export const createPost = (token, payload) =>
+  fetch(`${API_BASE}/posts`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload)}).then(json);
+
+export const getPost = (id) =>
+  fetch(`${API_BASE}/posts/${id}`).then(json);
+
+export const updatePost = (id, token, payload) =>
+  fetch(`${API_BASE}/posts/${id}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type':'application/json' }, body: JSON.stringify(payload)}).then(json);
+
+export const deletePost = (id, token) =>
+  fetch(`${API_BASE}/posts/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` }}).then(json);
+
+export const addComment = (postId, token, payload) =>
+  fetch(`${API_BASE}/posts/${postId}/comments`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type':'application/json' }, body: JSON.stringify(payload)}).then(json);
+
+export const updateComment = (commentId, token, payload) =>
+  fetch(`${API_BASE}/comments/${commentId}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type':'application/json' }, body: JSON.stringify(payload)}).then(json);
+
+export const deleteComment = (commentId, token) =>
+  fetch(`${API_BASE}/comments/${commentId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` }}).then(json);
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import App from './App';
+import './styles.css';
+
+createRoot(document.getElementById('root')).render(<App />);
+import React, { useState, useEffect } from 'react';
+import { BrowserRouter, Routes, Route, Link, useNavigate } from 'react-router-dom';
+import Register from './components/Auth/Register';
+import Login from './components/Auth/Login';
+import PostList from './components/Posts/PostList';
+import PostView from './components/Posts/PostView';
+import PostForm from './components/Posts/PostForm';
+import Profile from './components/Profile/Profile';
+
+const getToken = () => localStorage.getItem('token');
+const getUser = () => JSON.parse(localStorage.getItem('user') || 'null');
+
+export default function App() {
+  const [token, setToken] = useState(getToken());
+  const [user, setUser] = useState(getUser());
+
+  useEffect(() => {
+    if (token) localStorage.setItem('token', token); else localStorage.removeItem('token');
+    if (user) localStorage.setItem('user', JSON.stringify(user)); else localStorage.removeItem('user');
+  }, [token, user]);
+
+  const onLogout = () => { setToken(null); setUser(null); };
+
+  return (
+    <BrowserRouter>
+      <nav className="nav">
+        <Link to="/">Home</Link>
+        {user ? <>
+          <Link to="/create">Create Post</Link>
+          <Link to="/profile">Profile</Link>
+          <button onClick={onLogout}>Logout</button>
+        </> : <>
+          <Link to="/login">Login</Link>
+          <Link to="/register">Register</Link>
+        </>}
+      </nav>
+
+      <main className="container">
+        <Routes>
+          <Route path="/" element={<PostList token={token} />} />
+          <Route path="/posts/:id" element={<PostView token={token} user={user} />} />
+          <Route path="/create" element={<PostForm token={token} user={user} />} />
+          <Route path="/profile" element={<Profile token={token} setUser={setUser} />} />
+          <Route path="/login" element={<Login setToken={setToken} setUser={setUser} />} />
+          <Route path="/register" element={<Register setToken={setToken} setUser={setUser} />} />
+        </Routes>
+      </main>
+    </BrowserRouter>
+  );
+}
+body { font-family: Arial, sans-serif; margin:0; padding:0; }
+.nav { background:#222; color:#fff; padding:10px; display:flex; gap:10px; align-items:center; }
+.nav a { color:#fff; text-decoration:none; }
+.container { padding:20px; }
+.card { border:1px solid #ddd; padding:12px; margin-bottom:12px; border-radius:6px; }
+button { cursor:pointer; }
+input, textarea { width:100%; padding:8px; margin:6px 0; box-sizing:border-box; }
+import React, { useState } from 'react';
+import { authRegister } from '../../api';
+import { useNavigate } from 'react-router-dom';
+
+export default function Register({ setToken, setUser }) {
+  const [form, setForm] = useState({ name:'', email:'', password:'' });
+  const [error, setError] = useState('');
+  const navigate = useNavigate();
+
+  const onChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
+
+  const onSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const data = await authRegister(form);
+      localStorage.setItem('token', data.token);
+      localStorage.setItem('user', JSON.stringify(data.user));
+      setToken(data.token);
+      setUser(data.user);
+      navigate('/');
+    } catch (err) {
+      setError(err.message || 'Registration failed');
+    }
+  };
+
+  return (
+    <div className="card">
+      <h2>Register</h2>
+      {error && <div style={{color:'red'}}>{error}</div>}
+      <form onSubmit={onSubmit}>
+        <input name="name" placeholder="Name" value={form.name} onChange={onChange} required />
+        <input name="email" placeholder="Email" value={form.email} onChange={onChange} required />
+        <input name="password" placeholder="Password" type="password" value={form.password} onChange={onChange} required />
+        <button type="submit">Register</button>
+      </form>
+    </div>
+  );
+}
+import React, { useState } from 'react';
+import { authLogin } from '../../api';
+import { useNavigate } from 'react-router-dom';
+
+export default function Login({ setToken, setUser }) {
+  const [form, setForm] = useState({ email:'', password:'' });
+  const [error, setError] = useState('');
+  const navigate = useNavigate();
+
+  const onChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
+
+  const onSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const data = await authLogin(form);
+      setToken(data.token);
+      setUser(data.user);
+      navigate('/');
+    } catch (err) {
+      setError(err.message || 'Login failed');
+    }
+  };
+
+  return (
+    <div className="card">
+      <h2>Login</h2>
+      {error && <div style={{color:'red'}}>{error}</div>}
+      <form onSubmit={onSubmit}>
+        <input name="email" placeholder="Email" value={form.email} onChange={onChange} required />
+        <input name="password" placeholder="Password" type="password" value={form.password} onChange={onChange} required />
+        <button type="submit">Login</button>
+      </form>
+    </div>
+  );
+}
+import React, { useEffect, useState } from 'react';
+import { listPosts } from '../../api';
+import { Link } from 'react-router-dom';
+
+export default function PostList() {
+  const [posts, setPosts] = useState([]);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const data = await listPosts();
+        setPosts(data.posts || []);
+      } catch (e) {
+        setErr(e.message || 'Failed to load posts');
+      }
+    })();
+  }, []);
+
+  return (
+    <div>
+      <h1>Posts</h1>
+      {err && <div style={{color:'red'}}>{err}</div>}
+      {posts.map(p => (
+        <div key={p._id} className="card">
+          <h3><Link to={`/posts/${p._id}`}>{p.title}</Link></h3>
+          <div>By: {p.author?.name || 'Unknown'} • {new Date(p.createdAt).toLocaleString()}</div>
+          <p>{p.content?.slice(0, 200)}...</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+import React, { useEffect, useState } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { getPost, deletePost, addComment } from '../../api';
+import CommentForm from '../Comments/CommentForm';
+
+export default function PostView({ token, user }) {
+  const { id } = useParams();
+  const nav = useNavigate();
+  const [postData, setPostData] = useState(null);
+  const [comments, setComments] = useState([]);
+  const [err, setErr] = useState('');
+
+  const load = async () => {
+    try {
+      const data = await getPost(id);
+      setPostData(data.post);
+      setComments(data.comments || []);
+    } catch (e) { setErr(e.message); }
+  };
+
+  useEffect(() => { load(); }, [id]);
+
+  const onDelete = async () => {
+    if (!token) return alert('Login required');
+    if (!confirm('Delete post?')) return;
+    try {
+      await deletePost(id, token);
+      nav('/');
+    } catch (e) { alert(e.message || 'Delete failed'); }
+  };
+
+  const onAddComment = async (content) => {
+    try {
+      const comment = await addComment(id, token, { content });
+      setComments(prev => [...prev, comment]);
+    } catch (e) {
+      alert(e.message || 'Failed to add comment');
+    }
+  };
+
+  if (!postData) return <div>{err ? <div style={{color:'red'}}>{err}</div> : 'Loading...'}</div>;
+
+  return (
+    <div>
+      <h2>{postData.title}</h2>
+      <div>By {postData.author?.name}</div>
+      <div className="card">{postData.content}</div>
+      {user && user._id === postData.author?._id && <div>
+        <button onClick={() => nav(`/edit/${id}`)}>Edit</button>
+        <button onClick={onDelete}>Delete</button>
+      </div>}
+      <section>
+        <h3>Comments</h3>
+        {comments.map(c => (
+          <div key={c._id} className="card">
+            <div><strong>{c.author?.name}</strong> • {new Date(c.createdAt).toLocaleString()}</div>
+            <div>{c.content}</div>
+          </div>
+        ))}
+        {token ? <CommentForm onSubmit={onAddComment} /> : <div>Please login to comment</div>}
+      </section>
+    </div>
+  );
+}
+import React, { useState } from 'react';
+import { createPost } from '../../api';
+import { useNavigate } from 'react-router-dom';
+
+export default function PostForm({ token }) {
+  const [form, setForm] = useState({ title:'', content:'', tags:'' });
+  const [err, setErr] = useState('');
+  const nav = useNavigate();
+
+  const onChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!token) return alert('Login required');
+    try {
+      const data = await createPost(token, { title: form.title, content: form.content, tags: form.tags });
+      nav(`/posts/${data._id}`);
+    } catch (e) {
+      setErr(e.message || 'Failed to create post');
+    }
+  };
+
+  return (
+    <div className="card">
+      <h2>Create Post</h2>
+      {err && <div style={{color:'red'}}>{err}</div>}
+      <form onSubmit={submit}>
+        <input name="title" placeholder="Title" value={form.title} onChange={onChange} required />
+        <textarea name="content" rows="8" placeholder="Content" value={form.content} onChange={onChange} required />
+        <input name="tags" placeholder="Comma separated tags" value={form.tags} onChange={onChange} />
+        <button type="submit">Create</button>
+      </form>
+    </div>
+  );
+}
+import React, { useState } from 'react';
+import { createPost } from '../../api';
+import { useNavigate } from 'react-router-dom';
+
+export default function PostForm({ token }) {
+  const [form, setForm] = useState({ title:'', content:'', tags:'' });
+  const [err, setErr] = useState('');
+  const nav = useNavigate();
+
+  const onChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!token) return alert('Login required');
+    try {
+      const data = await createPost(token, { title: form.title, content: form.content, tags: form.tags });
+      nav(`/posts/${data._id}`);
+    } catch (e) {
+      setErr(e.message || 'Failed to create post');
+    }
+  };
+
+  return (
+    <div className="card">
+      <h2>Create Post</h2>
+      {err && <div style={{color:'red'}}>{err}</div>}
+      <form onSubmit={submit}>
+        <input name="title" placeholder="Title" value={form.title} onChange={onChange} required />
+        <textarea name="content" rows="8" placeholder="Content" value={form.content} onChange={onChange} required />
+        <input name="tags" placeholder="Comma separated tags" value={form.tags} onChange={onChange} />
+        <button type="submit">Create</button>
+      </form>
+    </div>
+  );
+}
+import React, { useState } from 'react';
+
+export default function CommentForm({ onSubmit }) {
+  const [text, setText] = useState('');
+  const submit = (e) => {
+    e.preventDefault();
+    if (!text.trim()) return;
+    onSubmit(text);
+    setText('');
+  };
+  return (
+    <form onSubmit={submit}>
+      <textarea placeholder="Write a comment..." value={text} onChange={e => setText(e.target.value)} required></textarea>
+      <button type="submit">Add Comment</button>
+    </form>
+  );
+}
+import React, { useEffect, useState } from 'react';
+import { getProfile, updateProfile } from '../../api';
+
+export default function Profile({ token, setUser }) {
+  const [form, setForm] = useState({ name:'', bio:'', avatarUrl:'' });
+  const [loading, setLoading] = useState(true);
+  const [msg, setMsg] = useState('');
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const data = await getProfile(token);
+        setForm({ name: data.user.name, bio: data.user.bio || '', avatarUrl: data.user.avatarUrl || '' });
+      } catch (e) { console.error(e); }
+      setLoading(false);
+    })();
+  }, [token]);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    try {
+      const data = await updateProfile(token, form);
+      setUser(data.user);
+      setMsg('Profile updated');
+    } catch (e) {
+      setMsg(e.message || 'Failed to update');
+    }
+  };
+
+  if (loading) return <div>Loading...</div>;
+  return (
+    <div className="card">
+      <h2>Profile</h2>
+      {msg && <div>{msg}</div>}
+      <form onSubmit={submit}>
+        <input name="name" value={form.name} onChange={e => setForm({...form, name: e.target.value})} required />
+        <input name="avatarUrl" value={form.avatarUrl} onChange={e => setForm({...form, avatarUrl: e.target.value})} placeholder="Avatar URL" />
+        <textarea name="bio" value={form.bio} onChange={e => setForm({...form, bio: e.target.value})} placeholder="Bio" />
+        <button type="submit">Save</button>
+      </form>
+    </div>
+  );
+}
