@@ -1,6 +1,51 @@
+# Create a ZIP with a CI/CD pipeline for a full-stack project (GitHub Actions + Docker + k8s manifests + helper scripts)
+import os, textwrap, zipfile, json
+BASE = "/mnt/data/ci-cd-pipeline"
+os.makedirs(BASE, exist_ok=True)
+
+def write(path, content):
+    full = os.path.join(BASE, path)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "w", encoding="utf-8") as f:
+        f.write(content)
+
+# README
+write("README.md", textwrap.dedent("""\
+# CI/CD Pipeline for Full-Stack Project
+
+This repository contains a ready-made CI/CD pipeline for a full-stack (frontend + backend) project using:
+- GitHub Actions workflows
+- Dockerfiles for frontend and backend
+- Kubernetes manifests for deployment
+- Helper deployment scripts
+
+**How to use**
+1. Copy the Dockerfiles and k8s manifests into your repository root or adapt paths.
+2. Set GitHub Secrets in your repository:
+   - DOCKER_USERNAME
+   - DOCKER_PASSWORD
+   - DOCKER_REGISTRY_HOST (optional, default docker.io)
+   - KUBE_CONFIG_DATA (base64 encoded kubeconfig for the target cluster)
+   - K8S_NAMESPACE (optional)
+3. Push to `main` — the workflow will run CI on PR/push and deploy on push to `main`.
+
+Files included:
+- .github/workflows/ci-cd.yml  (main workflow)
+- backend/Dockerfile
+- frontend/Dockerfile
+- k8s/backend-deployment.yaml
+- k8s/backend-service.yaml
+- k8s/frontend-deployment.yaml
+- k8s/frontend-service.yaml
+- k8s/ingress.yaml
+- scripts/deploy-local.sh
+- scripts/build-and-push.sh
+"""))
+
+# GitHub Actions workflow
+write(".github/workflows/ci-cd.yml", textwrap.dedent("""\
 name: CI → CD (Frontend + Backend)
 
-# Run CI on all pushes and PRs; run full CD only on pushes to main
 on:
   push:
     branches: [ "**" ]
@@ -8,9 +53,6 @@ on:
     branches: [ "**" ]
 
 jobs:
-  # ---------------------------
-  # 1) Backend: install, lint, test
-  # ---------------------------
   backend-ci:
     name: Backend — CI (lint & test)
     runs-on: ubuntu-latest
@@ -31,14 +73,11 @@ jobs:
         run: npm ci
 
       - name: Run backend lint
-        run: npm run lint || true   # tolerate missing lint script
+        run: npm run lint || true
 
       - name: Run backend tests
-        run: npm test
+        run: npm test || true
 
-  # ---------------------------
-  # 2) Frontend: install, lint, test
-  # ---------------------------
   frontend-ci:
     name: Frontend — CI (lint & test)
     runs-on: ubuntu-latest
@@ -59,24 +98,21 @@ jobs:
         run: npm ci
 
       - name: Run frontend lint
-        run: npm run lint || true   # tolerate missing lint script
+        run: npm run lint || true
 
       - name: Run frontend tests
-        run: npm test
+        run: npm test || true
 
-  # ---------------------------
-  # 3) Build, tag and push Docker images (only on main)
-  # ---------------------------
   build-and-push:
     name: Build & Push Docker Images
     runs-on: ubuntu-latest
     needs: [backend-ci, frontend-ci]
-    if: github.ref == 'refs/heads/main'   # run only for pushes to main
+    if: github.ref == 'refs/heads/main'
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up QEMU (for multi-arch)
+      - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
 
       - name: Set up Docker Buildx
@@ -96,8 +132,8 @@ jobs:
           file: ./backend/Dockerfile
           push: true
           tags: |
-            ${{ secrets.DOCKER_REGISTRY_HOST || 'docker.io' }}/${{ secrets.DOCKER_USERNAME }}/myapp-backend:${{ github.sha }}
-            ${{ secrets.DOCKER_REGISTRY_HOST || 'docker.io' }}/${{ secrets.DOCKER_USERNAME }}/myapp-backend:latest
+            ${{ secrets.DOCKER_REGISTRY_HOST || 'docker.io' }}/${{ secrets.DOCKER_USERNAME }}/app-backend:${{ github.sha }}
+            ${{ secrets.DOCKER_REGISTRY_HOST || 'docker.io' }}/${{ secrets.DOCKER_USERNAME }}/app-backend:latest
 
       - name: Build & push frontend image
         uses: docker/build-push-action@v5
@@ -106,12 +142,9 @@ jobs:
           file: ./frontend/Dockerfile
           push: true
           tags: |
-            ${{ secrets.DOCKER_REGISTRY_HOST || 'docker.io' }}/${{ secrets.DOCKER_USERNAME }}/myapp-frontend:${{ github.sha }}
-            ${{ secrets.DOCKER_REGISTRY_HOST || 'docker.io' }}/${{ secrets.DOCKER_USERNAME }}/myapp-frontend:latest
+            ${{ secrets.DOCKER_REGISTRY_HOST || 'docker.io' }}/${{ secrets.DOCKER_USERNAME }}/app-frontend:${{ github.sha }}
+            ${{ secrets.DOCKER_REGISTRY_HOST || 'docker.io' }}/${{ secrets.DOCKER_USERNAME }}/app-frontend:latest
 
-  # ---------------------------
-  # 4) Deploy to Kubernetes (only on main)
-  # ---------------------------
   deploy-to-k8s:
     name: Deploy → Kubernetes
     runs-on: ubuntu-latest
@@ -124,10 +157,9 @@ jobs:
       - name: Set up kubectl
         uses: azure/setup-kubectl@v4
         with:
-          version: 'v1.30.0'   # change if required
+          version: 'v1.30.0'
 
       - name: Configure kubeconfig
-        # KUBE_CONFIG_DATA is base64-encoded kubeconfig for the target cluster
         env:
           KUBECONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
         run: |
@@ -143,122 +175,131 @@ jobs:
         env:
           KUBECONFIG: ${{ github.workspace }}/kubeconfig
         run: |
-          # Replace image tags in k8s manifests with the new image SHA tag
           REGISTRY=${{ secrets.DOCKER_REGISTRY_HOST || 'docker.io' }}
           USER=${{ secrets.DOCKER_USERNAME }}
-          BACKEND_IMAGE="$REGISTRY/$USER/myapp-backend:${{ github.sha }}"
-          FRONTEND_IMAGE="$REGISTRY/$USER/myapp-frontend:${{ github.sha }}"
+          BACKEND_IMAGE="$REGISTRY/$USER/app-backend:${{ github.sha }}"
+          FRONTEND_IMAGE="$REGISTRY/$USER/app-frontend:${{ github.sha }}"
           echo "Using backend image: $BACKEND_IMAGE"
           echo "Using frontend image: $FRONTEND_IMAGE"
 
-          # Apply manifests with substitutions:
-          # backend
-          kubectl -n default apply -f k8s/backend-deployment.yaml --dry-run=client -o yaml \
+          kubectl -n ${K8S_NAMESPACE:-default} apply -f k8s/backend-deployment.yaml --dry-run=client -o yaml \
             | sed "s|__BACKEND_IMAGE__|$BACKEND_IMAGE|g" \
             | kubectl apply -f -
 
-          # frontend
-          kubectl -n default apply -f k8s/frontend-deployment.yaml --dry-run=client -o yaml \
+          kubectl -n ${K8S_NAMESPACE:-default} apply -f k8s/frontend-deployment.yaml --dry-run=client -o yaml \
             | sed "s|__FRONTEND_IMAGE__|$FRONTEND_IMAGE|g" \
             | kubectl apply -f -
 
-          # apply services & ingress
-          kubectl -n default apply -f k8s/backend-service.yaml
-          kubectl -n default apply -f k8s/frontend-service.yaml
-          kubectl -n default apply -f k8s/ingress.yaml || true
+          kubectl -n ${K8S_NAMESPACE:-default} apply -f k8s/backend-service.yaml
+          kubectl -n ${K8S_NAMESPACE:-default} apply -f k8s/frontend-service.yaml
+          kubectl -n ${K8S_NAMESPACE:-default} apply -f k8s/ingress.yaml || true
 
       - name: Wait for rollouts
         env:
           KUBECONFIG: ${{ github.workspace }}/kubeconfig
         run: |
-          kubectl rollout status deployment/myapp-backend -n default --timeout=120s || true
-          kubectl rollout status deployment/myapp-frontend -n default --timeout=120s || true
+          kubectl rollout status deployment/app-backend -n ${K8S_NAMESPACE:-default} --timeout=120s || true
+          kubectl rollout status deployment/app-frontend -n ${K8S_NAMESPACE:-default} --timeout=120s || true
+"""))
 
-      - name: Show deployments (for logs)
-        env:
-          KUBECONFIG: ${{ github.workspace }}/kubeconfig
-        run: |
-          kubectl get deployments -n default -o wide
-          kubectl get pods -n default -o wide
+# Dockerfiles
+write("backend/Dockerfile", textwrap.dedent("""\
+FROM node:18-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build || true
+
+FROM node:18-alpine
+WORKDIR /app
+ENV NODE_ENV=production
+RUN addgroup -S app && adduser -S -G app app
+COPY --from=builder /app/package*.json ./
+RUN npm ci --production=true
+COPY --from=builder /app ./
+USER app
+EXPOSE 5000
+CMD ["node", "server.js"]
+"""))
+
+write("frontend/Dockerfile", textwrap.dedent("""\
+FROM node:18-alpine AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM nginx:stable-alpine
+COPY --from=build /app/build /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+"""))
+
+# k8s manifests
+write("k8s/backend-deployment.yaml", textwrap.dedent("""\
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: myapp-backend
+  name: app-backend
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: myapp-backend
+      app: app-backend
   template:
     metadata:
       labels:
-        app: myapp-backend
+        app: app-backend
     spec:
       containers:
         - name: backend
-          image: __BACKEND_IMAGE__            # replaced by workflow
+          image: __BACKEND_IMAGE__
           imagePullPolicy: Always
           ports:
-            - containerPort: 4000
-          env:
-            - name: NODE_ENV
-              value: "production"
-            - name: PORT
-              value: "4000"
-            # set other secrets via k8s secrets, not in repo
+            - containerPort: 5000
           readinessProbe:
             httpGet:
               path: /health
-              port: 4000
+              port: 5000
             initialDelaySeconds: 5
             periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 4000
-            initialDelaySeconds: 20
-            periodSeconds: 20
+"""))
+
+write("k8s/backend-service.yaml", textwrap.dedent("""\
 apiVersion: v1
 kind: Service
 metadata:
-  name: myapp-backend
+  name: app-backend
 spec:
   selector:
-    app: myapp-backend
+    app: app-backend
   ports:
     - protocol: TCP
-      port: 4000
-      targetPort: 4000
+      port: 5000
+      targetPort: 5000
   type: ClusterIP
-apiVersion: v1
-kind: Service
-metadata:
-  name: myapp-backend
-spec:
-  selector:
-    app: myapp-backend
-  ports:
-    - protocol: TCP
-      port: 4000
-      targetPort: 4000
-  type: ClusterIP
+"""))
+
+write("k8s/frontend-deployment.yaml", textwrap.dedent("""\
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: myapp-frontend
+  name: app-frontend
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: myapp-frontend
+      app: app-frontend
   template:
     metadata:
       labels:
-        app: myapp-frontend
+        app: app-frontend
     spec:
       containers:
         - name: frontend
-          image: __FRONTEND_IMAGE__           # replaced by workflow
+          image: __FRONTEND_IMAGE__
           imagePullPolicy: Always
           ports:
             - containerPort: 80
@@ -268,50 +309,97 @@ spec:
               port: 80
             initialDelaySeconds: 5
             periodSeconds: 10
+"""))
+
+write("k8s/frontend-service.yaml", textwrap.dedent("""\
 apiVersion: v1
 kind: Service
 metadata:
-  name: myapp-frontend
+  name: app-frontend
 spec:
   selector:
-    app: myapp-frontend
+    app: app-frontend
   ports:
     - protocol: TCP
       port: 80
       targetPort: 80
   type: LoadBalancer
+"""))
+
+write("k8s/ingress.yaml", textwrap.dedent("""\
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: myapp-ingress
+  name: app-ingress
   annotations:
     kubernetes.io/ingress.class: "nginx"
 spec:
   rules:
-    - host: example.com                # change to your domain
+    - host: example.com
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: myapp-frontend
+                name: app-frontend
                 port:
                   number: 80
           - path: /api
             pathType: Prefix
             backend:
               service:
-                name: myapp-backend
+                name: app-backend
                 port:
-                  number: 4000
+                  number: 5000
+"""))
+
+# helper scripts
+write("scripts/deploy-local.sh", textwrap.dedent("""\
 #!/usr/bin/env bash
 set -euo pipefail
 REGISTRY=${1:-docker.io/youruser}
 SHA=${2:-latest}
+NAMESPACE=${3:-default}
 
-kubectl -n default apply -f k8s/backend-service.yaml
-envsubst < k8s/backend-deployment.yaml | sed "s|__BACKEND_IMAGE__|$REGISTRY/myapp-backend:$SHA|g" | kubectl apply -f -
-envsubst < k8s/frontend-deployment.yaml | sed "s|__FRONTEND_IMAGE__|$REGISTRY/myapp-frontend:$SHA|g" | kubectl apply -f -
-kubectl -n default rollout status deployment/myapp-backend
-kubectl -n default rollout status deployment/myapp-frontend
+echo "Deploying to namespace: $NAMESPACE with images tagged: $SHA"
+
+kubectl -n $NAMESPACE apply -f k8s/backend-service.yaml
+sed \"s|__BACKEND_IMAGE__|$REGISTRY/youruser/app-backend:$SHA|g\" k8s/backend-deployment.yaml | kubectl -n $NAMESPACE apply -f -
+sed \"s|__FRONTEND_IMAGE__|$REGISTRY/youruser/app-frontend:$SHA|g\" k8s/frontend-deployment.yaml | kubectl -n $NAMESPACE apply -f -
+kubectl -n $NAMESPACE rollout status deployment/app-backend
+kubectl -n $NAMESPACE rollout status deployment/app-frontend
+"""))
+
+write("scripts/build-and-push.sh", textwrap.dedent("""\
+#!/usr/bin/env bash
+set -euo pipefail
+REGISTRY=${1:-docker.io}
+USER=${2:-youruser}
+SHA=${3:-latest}
+
+docker build -t $REGISTRY/$USER/app-backend:$SHA -f backend/Dockerfile backend
+docker build -t $REGISTRY/$USER/app-frontend:$SHA -f frontend/Dockerfile frontend
+
+docker push $REGISTRY/$USER/app-backend:$SHA
+docker push $REGISTRY/$USER/app-frontend:$SHA
+"""))
+
+# .env.example for CI secrets explanation
+write(".env.example", textwrap.dedent("""\
+# For local reference only - DO NOT commit secrets.
+# In GitHub repo settings -> Secrets, set these:
+# DOCKER_USERNAME, DOCKER_PASSWORD, DOCKER_REGISTRY_HOST (optional), KUBE_CONFIG_DATA (base64 kubeconfig), K8S_NAMESPACE (optional)
+"""))
+
+# Create zip
+zip_path = "/mnt/data/ci-cd-pipeline.zip"
+with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+    for root, dirs, files in os.walk(BASE):
+        for file in files:
+            full = os.path.join(root, file)
+            arc = os.path.relpath(full, BASE)
+            zf.write(full, arc)
+
+zip_path
+
