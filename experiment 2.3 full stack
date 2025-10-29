@@ -1,64 +1,42 @@
-npm install @reduxjs/toolkit react-redux
-import { configureStore } from '@reduxjs/toolkit';
-import cartReducer from './cartSlice';
+from pathlib import Path
+import zipfile
 
-const store = configureStore({
-  reducer: {
-    cart: cartReducer,
+# Define project structure for Redux shopping cart app
+project_root = Path("/mnt/data/redux-shopping-cart")
+src_path = project_root / "src" / "redux"
+(src_path / "actions").mkdir(parents=True, exist_ok=True)
+(src_path / "reducers").mkdir(parents=True, exist_ok=True)
+(project_root / "public").mkdir(parents=True, exist_ok=True)
+
+# package.json
+package_json = """
+{
+  "name": "redux-shopping-cart",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@reduxjs/toolkit": "^1.9.5",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-redux": "^8.1.2",
+    "react-scripts": "5.0.1"
   },
-});
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  }
+}
+"""
 
-export default store;
-import { createSlice } from '@reduxjs/toolkit';
-
-const initialState = {
-  items: [], // Each item: { id, name, price, quantity }
-  totalAmount: 0,
-};
-
-const cartSlice = createSlice({
-  name: 'cart',
-  initialState,
-  reducers: {
-    addItem(state, action) {
-      const item = action.payload;
-      const existingItem = state.items.find(i => i.id === item.id);
-
-      if (existingItem) {
-        existingItem.quantity += 1;
-      } else {
-        state.items.push({ ...item, quantity: 1 });
-      }
-
-      state.totalAmount += item.price;
-    },
-    removeItem(state, action) {
-      const id = action.payload;
-      const existingItem = state.items.find(i => i.id === id);
-
-      if (existingItem) {
-        state.totalAmount -= existingItem.price;
-        if (existingItem.quantity === 1) {
-          state.items = state.items.filter(i => i.id !== id);
-        } else {
-          existingItem.quantity -= 1;
-        }
-      }
-    },
-    clearCart(state) {
-      state.items = [];
-      state.totalAmount = 0;
-    },
-  },
-});
-
-export const { addItem, removeItem, clearCart } = cartSlice.actions;
-export default cartSlice.reducer;
+# index.js
+index_js = """
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import App from './App';
 import { Provider } from 'react-redux';
-import store from './store';
+import store from './redux/store';
+import App from './App';
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
@@ -66,77 +44,144 @@ root.render(
     <App />
   </Provider>
 );
-import React from 'react';
-import { useDispatch } from 'react-redux';
-import { addItem } from './cartSlice';
+"""
 
-const ProductList = ({ products }) => {
-  const dispatch = useDispatch();
-
-  const handleAddToCart = (product) => {
-    dispatch(addItem(product));
-  };
-
-  return (
-    <div className="grid grid-cols-3 gap-4">
-      {products.map(product => (
-        <div key={product.id} className="border p-4 rounded-lg shadow">
-          <h3 className="text-lg font-semibold">{product.name}</h3>
-          <p>Price: ${product.price}</p>
-          <button
-            className="mt-2 px-4 py-2 bg-blue-600 text-white rounded-lg"
-            onClick={() => handleAddToCart(product)}
-          >
-            Add to Cart
-          </button>
-        </div>
-      ))}
-    </div>
-  );
-};
-
-export default ProductList;
+# App.js
+app_js = """
 import React from 'react';
 import { useSelector, useDispatch } from 'react-redux';
-import { removeItem, clearCart } from './cartSlice';
+import { addToCart, removeFromCart } from './redux/actions/cartActions';
 
-const Cart = () => {
-  const { items, totalAmount } = useSelector(state => state.cart);
+const App = () => {
   const dispatch = useDispatch();
+  const cartItems = useSelector((state) => state.cart.items);
+
+  const handleAdd = (product) => {
+    dispatch(addToCart(product));
+  };
+
+  const handleRemove = (id) => {
+    dispatch(removeFromCart(id));
+  };
+
+  const products = [
+    { id: 1, name: 'Laptop', price: 800 },
+    { id: 2, name: 'Headphones', price: 150 },
+    { id: 3, name: 'Mouse', price: 40 }
+  ];
 
   return (
-    <div className="p-6">
-      <h2 className="text-2xl font-bold mb-4">Shopping Cart</h2>
+    <div style={{ padding: '2rem' }}>
+      <h1>🛒 Shopping Cart</h1>
+      <h2>Products</h2>
+      <ul>
+        {products.map((p) => (
+          <li key={p.id}>
+            {p.name} - ${p.price}{' '}
+            <button onClick={() => handleAdd(p)}>Add to Cart</button>
+          </li>
+        ))}
+      </ul>
 
-      {items.length === 0 ? (
-        <p>Your cart is empty.</p>
+      <h2>Cart</h2>
+      {cartItems.length === 0 ? (
+        <p>No items in cart.</p>
       ) : (
-        <>
-          <ul>
-            {items.map(item => (
-              <li key={item.id} className="flex justify-between py-2">
-                <span>{item.name} (x{item.quantity})</span>
-                <span>${item.price * item.quantity}</span>
-                <button
-                  className="ml-4 text-red-600"
-                  onClick={() => dispatch(removeItem(item.id))}
-                >
-                  Remove
-                </button>
-              </li>
-            ))}
-          </ul>
-          <h3 className="mt-4 text-xl font-semibold">Total: ${totalAmount}</h3>
-          <button
-            className="mt-2 px-4 py-2 bg-red-600 text-white rounded-lg"
-            onClick={() => dispatch(clearCart())}
-          >
-            Clear Cart
-          </button>
-        </>
+        <ul>
+          {cartItems.map((item) => (
+            <li key={item.id}>
+              {item.name} - ${item.price}{' '}
+              <button onClick={() => handleRemove(item.id)}>Remove</button>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
 };
 
-export default Cart;
+export default App;
+"""
+
+# Redux: actions/cartActions.js
+cart_actions = """
+export const addToCart = (product) => {
+  return {
+    type: 'ADD_TO_CART',
+    payload: product
+  };
+};
+
+export const removeFromCart = (id) => {
+  return {
+    type: 'REMOVE_FROM_CART',
+    payload: id
+  };
+};
+"""
+
+# Redux: reducers/cartReducer.js
+cart_reducer = """
+const initialState = {
+  items: []
+};
+
+const cartReducer = (state = initialState, action) => {
+  switch (action.type) {
+    case 'ADD_TO_CART':
+      return { ...state, items: [...state.items, action.payload] };
+    case 'REMOVE_FROM_CART':
+      return { ...state, items: state.items.filter(item => item.id !== action.payload) };
+    default:
+      return state;
+  }
+};
+
+export default cartReducer;
+"""
+
+# Redux: store.js
+store_js = """
+import { createStore, combineReducers } from 'redux';
+import cartReducer from './reducers/cartReducer';
+
+const rootReducer = combineReducers({
+  cart: cartReducer
+});
+
+const store = createStore(rootReducer);
+
+export default store;
+"""
+
+# HTML entry point
+index_html = """
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Redux Shopping Cart</title>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
+"""
+
+# Write all files
+(project_root / "package.json").write_text(package_json)
+(project_root / "src" / "index.js").write_text(index_js)
+(project_root / "src" / "App.js").write_text(app_js)
+(src_path / "actions" / "cartActions.js").write_text(cart_actions)
+(src_path / "reducers" / "cartReducer.js").write_text(cart_reducer)
+(src_path / "store.js").write_text(store_js)
+(project_root / "public" / "index.html").write_text(index_html)
+
+# Zip project
+zip_path = Path("/mnt/data/redux-shopping-cart.zip")
+with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+    for file in project_root.rglob("*"):
+        zipf.write(file, file.relative_to(project_root.parent))
+
+zip_path
