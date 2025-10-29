@@ -1,0 +1,308 @@
+npm install express jsonwebtoken bcryptjs dotenv
+project/
+│
+├── server.js
+├── .env
+├── middleware/
+│   └── authMiddleware.js
+├── routes/
+│   └── userRoutes.js
+└── controllers/
+    └── userController.js
+PORT=5000
+JWT_SECRET=your_jwt_secret_key_here
+import express from 'express';
+import dotenv from 'dotenv';
+import userRoutes from './routes/userRoutes.js';
+
+dotenv.config();
+const app = express();
+
+// Middleware to parse JSON
+app.use(express.json());
+
+// Routes
+app.use('/api/users', userRoutes);
+
+// Default route
+app.get('/', (req, res) => {
+  res.send('JWT Protected API Server Running');
+});
+
+// Start the server
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+const users = []; // Simulated in-memory database
+
+// Generate JWT
+const generateToken = (userId) => {
+  return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
+    expiresIn: '1h',
+  });
+};
+
+// Register User
+export const registerUser = async (req, res) => {
+  const { name, email, password } = req.body;
+
+  const userExists = users.find((u) => u.email === email);
+  if (userExists) {
+    return res.status(400).json({ message: 'User already exists' });
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+  const newUser = { id: Date.now(), name, email, password: hashedPassword };
+
+  users.push(newUser);
+  const token = generateToken(newUser.id);
+
+  res.status(201).json({
+    message: 'User registered successfully',
+    user: { id: newUser.id, name, email },
+    token,
+  });
+};
+
+// Login User
+export const loginUser = async (req, res) => {
+  const { email, password } = req.body;
+  const user = users.find((u) => u.email === email);
+
+  if (!user) {
+    return res.status(400).json({ message: 'Invalid credentials' });
+  }
+
+  const isPasswordMatch = await bcrypt.compare(password, user.password);
+  if (!isPasswordMatch) {
+    return res.status(400).json({ message: 'Invalid credentials' });
+  }
+
+  const token = generateToken(user.id);
+
+  res.status(200).json({
+    message: 'Login successful',
+    user: { id: user.id, name: user.name, email: user.email },
+    token,
+  });
+};
+
+// Protected Route Example
+export const getUserProfile = (req, res) => {
+  res.status(200).json({
+    message: 'Access granted to protected route',
+    user: req.user,
+  });
+};
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+const users = []; // Simulated in-memory database
+
+// Generate JWT
+const generateToken = (userId) => {
+  return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
+    expiresIn: '1h',
+  });
+};
+
+// Register User
+export const registerUser = async (req, res) => {
+  const { name, email, password } = req.body;
+
+  const userExists = users.find((u) => u.email === email);
+  if (userExists) {
+    return res.status(400).json({ message: 'User already exists' });
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+  const newUser = { id: Date.now(), name, email, password: hashedPassword };
+
+  users.push(newUser);
+  const token = generateToken(newUser.id);
+
+  res.status(201).json({
+    message: 'User registered successfully',
+    user: { id: newUser.id, name, email },
+    token,
+  });
+};
+
+// Login User
+export const loginUser = async (req, res) => {
+  const { email, password } = req.body;
+  const user = users.find((u) => u.email === email);
+
+  if (!user) {
+    return res.status(400).json({ message: 'Invalid credentials' });
+  }
+
+  const isPasswordMatch = await bcrypt.compare(password, user.password);
+  if (!isPasswordMatch) {
+    return res.status(400).json({ message: 'Invalid credentials' });
+  }
+
+  const token = generateToken(user.id);
+
+  res.status(200).json({
+    message: 'Login successful',
+    user: { id: user.id, name: user.name, email: user.email },
+    token,
+  });
+};
+
+// Protected Route Example
+export const getUserProfile = (req, res) => {
+  res.status(200).json({
+    message: 'Access granted to protected route',
+    user: req.user,
+  });
+};
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+const users = []; // Simulated in-memory database
+
+// Generate JWT
+const generateToken = (userId) => {
+  return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
+    expiresIn: '1h',
+  });
+};
+
+// Register User
+export const registerUser = async (req, res) => {
+  const { name, email, password } = req.body;
+
+  const userExists = users.find((u) => u.email === email);
+  if (userExists) {
+    return res.status(400).json({ message: 'User already exists' });
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+  const newUser = { id: Date.now(), name, email, password: hashedPassword };
+
+  users.push(newUser);
+  const token = generateToken(newUser.id);
+
+  res.status(201).json({
+    message: 'User registered successfully',
+    user: { id: newUser.id, name, email },
+    token,
+  });
+};
+
+// Login User
+export const loginUser = async (req, res) => {
+  const { email, password } = req.body;
+  const user = users.find((u) => u.email === email);
+
+  if (!user) {
+    return res.status(400).json({ message: 'Invalid credentials' });
+  }
+
+  const isPasswordMatch = await bcrypt.compare(password, user.password);
+  if (!isPasswordMatch) {
+    return res.status(400).json({ message: 'Invalid credentials' });
+  }
+
+  const token = generateToken(user.id);
+
+  res.status(200).json({
+    message: 'Login successful',
+    user: { id: user.id, name: user.name, email: user.email },
+    token,
+  });
+};
+
+// Protected Route Example
+export const getUserProfile = (req, res) => {
+  res.status(200).json({
+    message: 'Access granted to protected route',
+    user: req.user,
+  });
+};
+import jwt from 'jsonwebtoken';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+export const protect = (req, res, next) => {
+  let token;
+
+  if (
+    req.headers.authorization &&
+    req.headers.authorization.startsWith('Bearer ')
+  ) {
+    try {
+      token = req.headers.authorization.split(' ')[1];
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+      // Attach decoded user information to request
+      req.user = decoded;
+      next();
+    } catch (error) {
+      return res.status(401).json({ message: 'Invalid or expired token' });
+    }
+  } else {
+    return res.status(401).json({ message: 'No token provided' });
+  }
+};
+import express from 'express';
+import {
+  registerUser,
+  loginUser,
+  getUserProfile,
+} from '../controllers/userController.js';
+import { protect } from '../middleware/authMiddleware.js';
+
+const router = express.Router();
+
+router.post('/register', registerUser);
+router.post('/login', loginUser);
+router.get('/profile', protect, getUserProfile); // Protected route
+
+export default router;
+{
+  "name": "Alice",
+  "email": "alice@example.com",
+  "password": "password123"
+}
+{
+  "message": "User registered successfully",
+  "user": {
+    "id": 169840190,
+    "name": "Alice",
+    "email": "alice@example.com"
+  },
+  "token": "eyJhbGciOiJIUzI1NiIsInR..."
+}
+{
+  "email": "alice@example.com",
+  "password": "password123"
+}
+{
+  "message": "Login successful",
+  "user": {
+    "id": 169840190,
+    "name": "Alice",
+    "email": "alice@example.com"
+  },
+  "token": "eyJhbGciOiJIUzI1NiIsInR..."
+}
+Authorization: Bearer <your_JWT_token_here>
+{
+  "message": "Access granted to protected route",
+  "user": { "id": 169840190, "iat": 1730209094, "exp": 1730212694 }
+}
