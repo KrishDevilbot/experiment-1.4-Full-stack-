@@ -1,0 +1,317 @@
+name: CI → CD (Frontend + Backend)
+
+# Run CI on all pushes and PRs; run full CD only on pushes to main
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ "**" ]
+
+jobs:
+  # ---------------------------
+  # 1) Backend: install, lint, test
+  # ---------------------------
+  backend-ci:
+    name: Backend — CI (lint & test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install backend dependencies
+        run: npm ci
+
+      - name: Run backend lint
+        run: npm run lint || true   # tolerate missing lint script
+
+      - name: Run backend tests
+        run: npm test
+
+  # ---------------------------
+  # 2) Frontend: install, lint, test
+  # ---------------------------
+  frontend-ci:
+    name: Frontend — CI (lint & test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run frontend lint
+        run: npm run lint || true   # tolerate missing lint script
+
+      - name: Run frontend tests
+        run: npm test
+
+  # ---------------------------
+  # 3) Build, tag and push Docker images (only on main)
+  # ---------------------------
+  build-and-push:
+    name: Build & Push Docker Images
+    runs-on: ubuntu-latest
+    needs: [backend-ci, frontend-ci]
+    if: github.ref == 'refs/heads/main'   # run only for pushes to main
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (for multi-arch)
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Docker registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ secrets.DOCKER_REGISTRY_HOST || 'docker.io' }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build & push backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_REGISTRY_HOST || 'docker.io' }}/${{ secrets.DOCKER_USERNAME }}/myapp-backend:${{ github.sha }}
+            ${{ secrets.DOCKER_REGISTRY_HOST || 'docker.io' }}/${{ secrets.DOCKER_USERNAME }}/myapp-backend:latest
+
+      - name: Build & push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_REGISTRY_HOST || 'docker.io' }}/${{ secrets.DOCKER_USERNAME }}/myapp-frontend:${{ github.sha }}
+            ${{ secrets.DOCKER_REGISTRY_HOST || 'docker.io' }}/${{ secrets.DOCKER_USERNAME }}/myapp-frontend:latest
+
+  # ---------------------------
+  # 4) Deploy to Kubernetes (only on main)
+  # ---------------------------
+  deploy-to-k8s:
+    name: Deploy → Kubernetes
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.30.0'   # change if required
+
+      - name: Configure kubeconfig
+        # KUBE_CONFIG_DATA is base64-encoded kubeconfig for the target cluster
+        env:
+          KUBECONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+        run: |
+          if [ -z "$KUBECONFIG_DATA" ]; then
+            echo "KUBE_CONFIG_DATA secret is not set. Aborting."
+            exit 1
+          fi
+          echo "$KUBECONFIG_DATA" | base64 --decode > kubeconfig
+          export KUBECONFIG="$PWD/kubeconfig"
+          kubectl config view
+
+      - name: Deploy manifests (apply)
+        env:
+          KUBECONFIG: ${{ github.workspace }}/kubeconfig
+        run: |
+          # Replace image tags in k8s manifests with the new image SHA tag
+          REGISTRY=${{ secrets.DOCKER_REGISTRY_HOST || 'docker.io' }}
+          USER=${{ secrets.DOCKER_USERNAME }}
+          BACKEND_IMAGE="$REGISTRY/$USER/myapp-backend:${{ github.sha }}"
+          FRONTEND_IMAGE="$REGISTRY/$USER/myapp-frontend:${{ github.sha }}"
+          echo "Using backend image: $BACKEND_IMAGE"
+          echo "Using frontend image: $FRONTEND_IMAGE"
+
+          # Apply manifests with substitutions:
+          # backend
+          kubectl -n default apply -f k8s/backend-deployment.yaml --dry-run=client -o yaml \
+            | sed "s|__BACKEND_IMAGE__|$BACKEND_IMAGE|g" \
+            | kubectl apply -f -
+
+          # frontend
+          kubectl -n default apply -f k8s/frontend-deployment.yaml --dry-run=client -o yaml \
+            | sed "s|__FRONTEND_IMAGE__|$FRONTEND_IMAGE|g" \
+            | kubectl apply -f -
+
+          # apply services & ingress
+          kubectl -n default apply -f k8s/backend-service.yaml
+          kubectl -n default apply -f k8s/frontend-service.yaml
+          kubectl -n default apply -f k8s/ingress.yaml || true
+
+      - name: Wait for rollouts
+        env:
+          KUBECONFIG: ${{ github.workspace }}/kubeconfig
+        run: |
+          kubectl rollout status deployment/myapp-backend -n default --timeout=120s || true
+          kubectl rollout status deployment/myapp-frontend -n default --timeout=120s || true
+
+      - name: Show deployments (for logs)
+        env:
+          KUBECONFIG: ${{ github.workspace }}/kubeconfig
+        run: |
+          kubectl get deployments -n default -o wide
+          kubectl get pods -n default -o wide
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: myapp-backend
+  template:
+    metadata:
+      labels:
+        app: myapp-backend
+    spec:
+      containers:
+        - name: backend
+          image: __BACKEND_IMAGE__            # replaced by workflow
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 4000
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "4000"
+            # set other secrets via k8s secrets, not in repo
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 4000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 4000
+            initialDelaySeconds: 20
+            periodSeconds: 20
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-backend
+spec:
+  selector:
+    app: myapp-backend
+  ports:
+    - protocol: TCP
+      port: 4000
+      targetPort: 4000
+  type: ClusterIP
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-backend
+spec:
+  selector:
+    app: myapp-backend
+  ports:
+    - protocol: TCP
+      port: 4000
+      targetPort: 4000
+  type: ClusterIP
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: myapp-frontend
+  template:
+    metadata:
+      labels:
+        app: myapp-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: __FRONTEND_IMAGE__           # replaced by workflow
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-frontend
+spec:
+  selector:
+    app: myapp-frontend
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+  type: LoadBalancer
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: myapp-ingress
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+spec:
+  rules:
+    - host: example.com                # change to your domain
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: myapp-frontend
+                port:
+                  number: 80
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: myapp-backend
+                port:
+                  number: 4000
+#!/usr/bin/env bash
+set -euo pipefail
+REGISTRY=${1:-docker.io/youruser}
+SHA=${2:-latest}
+
+kubectl -n default apply -f k8s/backend-service.yaml
+envsubst < k8s/backend-deployment.yaml | sed "s|__BACKEND_IMAGE__|$REGISTRY/myapp-backend:$SHA|g" | kubectl apply -f -
+envsubst < k8s/frontend-deployment.yaml | sed "s|__FRONTEND_IMAGE__|$REGISTRY/myapp-frontend:$SHA|g" | kubectl apply -f -
+kubectl -n default rollout status deployment/myapp-backend
+kubectl -n default rollout status deployment/myapp-frontend
